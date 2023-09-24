@@ -1,0 +1,10 @@
+appdirs==1.4.4
+lxml==4.9.3
+martypy==3.5.2
+memory-profiler==0.61.0
+packaging==23.1
+psutil==5.9.5
+pyserial==3.5
+pyshark==0.6
+scapy==2.5.0
+termcolor==2.3.0
