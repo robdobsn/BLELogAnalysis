@@ -3,11 +3,13 @@ import pyshark
 import argparse
 import json
 import yaml
+import os
+import nest_asyncio
 import numpy as np
 from PacketInfo import PacketInfo
 
 # Basic logging configuration
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO,format='%(levelname)s: %(message)s')
 log = logging.getLogger(__name__)
 
 ble_dev_addr_packet_paths = [
@@ -64,23 +66,23 @@ ble_control_opcode_labels = {
     30: "LL_CLOCK_ACCURACY_RSP",
 }
 ble_feature_req_bits = [
-    ["LE Encryption","ENC"],
-    ["Connection Parameters Request Procedure","CPRP"],
-    ["Extended Reject Indication","EXTREJ"],
-    ["Slave-initiated Features Exchange","SLVFEAT"],
-    ["LE Ping","PING"],
-    ["LE Data Packet Length Extension","DLE"],
-    ["LL Privacy","PRIV"],
-    ["Extended Scanner Filter Policies","SCANFILT"],
-    ["LE 2M PHY","2M"],
-    ["Stable Modulation Index - Transmitter","STMODTX"],
-    ["Stable Modulation Index - Receiver","STMODRX"],
-    ["LE Coded PHY","CODED"],
-    ["LE Extended Advertising","EXTADV"],
-    ["LE Periodic Advertising","PERADV"],
-    ["Channel Selection Algorithm #2","CHSEL2"],
-    ["LE Power Class 1","PWRC1"],
-    ["Minimum Number of Used Channels Procedure","MINCHPROC"],
+    ["LE Encryption","ENC", False],
+    ["Connection Parameters Request Procedure","CPRP", False],
+    ["Extended Reject Indication","EXTREJ", False],
+    ["Slave-initiated Features Exchange","SLVFEAT", False],
+    ["LE Ping","PING", False],
+    ["LE Data Packet Length Extension","DLE", True],
+    ["LL Privacy","PRIV", False],
+    ["Extended Scanner Filter Policies","SCANFILT", False],
+    ["LE 2M PHY","2M", True],
+    ["Stable Modulation Index - Transmitter","STMODTX", False],
+    ["Stable Modulation Index - Receiver","STMODRX", False],
+    ["LE Coded PHY","CODED", True],
+    ["LE Extended Advertising","EXTADV", False],
+    ["LE Periodic Advertising","PERADV", False],
+    ["Channel Selection Algorithm #2","CHSEL2", False],
+    ["LE Power Class 1","PWRC1", False],
+    ["Minimum Number of Used Channels Procedure","MINCHPROC", False],
 ]
 ble_att_opcode_paths = [
     "btatt.opcode.method"
@@ -185,6 +187,59 @@ class BLEStateAnalyzer:
     
     def summarizeConnection(self, conn_info):
         # Summarize connection
+        # Features
+        if "FEATURE_RSP" in conn_info:
+            log.info(f"IMPORTANT FEATURES {conn_info['FEATURE_RSP']}")
+
+        # DLE
+        if "DLE" in conn_info:
+            txMax = conn_info["DLE"]["txMax"]
+            txTime = conn_info["DLE"]["txTime"]
+            rxMax = conn_info["DLE"]["rxMax"]
+            rxTime = conn_info["DLE"]["rxTime"]
+            log.info(f"DLE (Data Length Extension) TxMax {txMax} TxTime {txTime} RxMax {rxMax} RxTime {rxTime}")
+
+        # MTU
+        if "RX_MTU" in conn_info:
+            log.info(f"RX MTU {conn_info['RX_MTU']}")
+
+        # Connection interval
+        if "UPDATE_IND" in conn_info:
+            interval = conn_info["UPDATE_IND"]["interval"]
+            latency = conn_info["UPDATE_IND"]["latency"]
+            timeout = conn_info["UPDATE_IND"]["timeout"]
+            log.info(f"CONNECTION Interval {interval} ({interval*1.25}ms) Latency {latency} Timeout {timeout}")
+
+        # PHY
+        if "PHY_UPDATE_IND" in conn_info:
+            phy = conn_info["PHY_UPDATE_IND"]["phy"]
+            coded = conn_info["PHY_UPDATE_IND"]["coded"]
+            log.info(f"PHY PHY {phy}m CODED:{'YES' if coded else 'NO'}")
+        else:
+            log.info(f"PHY PHY 1m CODED:NO")
+
+        # Calculate maximum theoretical throughput (rx)
+        if "UPDATE_IND" in conn_info and "RX_MTU" in conn_info:
+            assumption_max_packets_per_conn_interval = 6
+            interval_us = conn_info["UPDATE_IND"]["interval"] * 1.25 * 1000
+            latency = conn_info["UPDATE_IND"]["latency"]
+            timeout = conn_info["UPDATE_IND"]["timeout"]
+            rx_mtu = conn_info["RX_MTU"]
+            data_len = 27 if "DLE" not in conn_info else conn_info["DLE"]["rxMax"]
+            if rx_mtu < data_len:
+                data_len = rx_mtu
+            packet_time_us = (data_len + 14) * 8 + 380
+            num_packets_in_interval = interval_us // packet_time_us
+            if num_packets_in_interval > assumption_max_packets_per_conn_interval:
+                num_packets_in_interval = assumption_max_packets_per_conn_interval
+            throughput_bytes_per_sec = 1000 * num_packets_in_interval * data_len / interval_us
+            if "PHY_UPDATE_IND" in conn_info:
+                phy = conn_info["PHY_UPDATE_IND"]["phy"]
+                if phy == 2:
+                    throughput_bytes_per_sec *= 1.8
+            log.info(f"APPROX MAX THROUGHPUT {throughput_bytes_per_sec:.2f} kBytes/s ({num_packets_in_interval} packets per interval)")
+
+        # Data frames
         conn_summary = {}
         if "dataFrames" in conn_info:
             if len(conn_info["dataFrames"]) > 0:
@@ -216,21 +271,75 @@ class BLEStateAnalyzer:
         self.state_sequence.append(self.cur_state)
         self.cur_state = {}
 
-    def extractFeatures(self, pysh_pkt):
+    def extractFeatures(self, pysh_pkt, feature_type):
         features = ""
+        important_features = ""
         featureSet = int(pysh_pkt.btle.control.feature.set.value)
         bitmask = 1
         for i in range(0, len(ble_feature_req_bits)):
             if featureSet & bitmask:
                 features += ble_feature_req_bits[i][1] + " "
+                if ble_feature_req_bits[i][2]:
+                    important_features += ble_feature_req_bits[i][1] + ":YES "
+            elif ble_feature_req_bits[i][2]:
+                features += f"({ble_feature_req_bits[i][1]}:NO) "
+                important_features += f"{ble_feature_req_bits[i][1]}:NO "
             bitmask = bitmask << 1
+        self.cur_state[feature_type] = important_features
         return features
+    
+    def extractDLE(self, pysh_pkt):
+        txMax = pysh_pkt.btle.control.max.tx.octets
+        txTime = pysh_pkt.btle.control.max.tx.time
+        rxMax = pysh_pkt.btle.control.max.rx.octets
+        rxTime = pysh_pkt.btle.control.max.rx.time
+        self.cur_state["DLE"] = {
+            "txMax":txMax,
+            "txTime":txTime,
+            "rxMax":rxMax,
+            "rxTime":rxTime
+        }
+        return f"TxMax {txMax} TxTime {txTime} RxMax {rxMax} RxTime {rxTime}"
+    
+    def extractInterval(self, pysh_pkt, interval_type):
+        interval = pysh_pkt.btle.control.interval
+        latency = pysh_pkt.btle.control.latency
+        timeout = pysh_pkt.btle.control.timeout
+        self.cur_state[interval_type] = {
+            "interval":interval,
+            "latency":latency,
+            "timeout":timeout
+        }
+        return interval, latency, timeout
+    
+    def extractIntervalMinMax(self, pysh_pkt, interval_type):
+        interval_min = pysh_pkt.btle.control.interval.min
+        interval_max = pysh_pkt.btle.control.interval.max
+        latency = pysh_pkt.btle.control.latency
+        timeout = pysh_pkt.btle.control.timeout
+        self.cur_state[interval_type] = {
+            "interval_min":interval_min,
+            "interval_max":interval_max,
+            "latency":latency,
+            "timeout":timeout
+        }
+        return interval_min, interval_max, latency, timeout
+
+    def extractPhy(self, pysh_pkt, phy_type):
+        phy = 2 if hasattr(pysh_pkt.btle.control, "phys") and pysh_pkt.btle.control.phys.le.get_field("2m").get_field("phy") else 1
+        coded = hasattr(pysh_pkt.btle.control, "phys") and pysh_pkt.btle.control.phys.le.coded.phy
+        self.cur_state[phy_type] = {
+            "phy":phy,
+            "coded":coded
+        }
+        return phy, coded
     
     def handleLLOpcode(self, opcode, pysh_pkt, packet_info: PacketInfo):
         # Handle specific opcodes
         out_str = f"{self.timeFormat(packet_info.timestamp)} {packet_info.num} "
         if opcode == 0: # LL_CONNECTION_UPDATE_IND
-            out_str += f"LL_CONNECTION_UPDATE_IND Interval {pysh_pkt.btle.control.interval} Latency {pysh_pkt.btle.control.latency} Timeout {pysh_pkt.btle.control.timeout}"
+            interval, latency, timeout = self.extractInterval(pysh_pkt, "UPDATE_IND")
+            out_str += f"LL_CONNECTION_UPDATE_IND Interval {interval} ({interval*1.25}ms) Latency {latency} Timeout {timeout}"
         elif opcode == 1: # LL_CHANNEL_MAP_IND
             out_str += f"LL_CHANNEL_MAP_IND {pysh_pkt.btle.control.channel_map}"
         elif opcode == 2: # LL_TERMINATE_IND
@@ -246,9 +355,9 @@ class BLEStateAnalyzer:
         elif opcode == 7: # LL_UNKNOWN_RSP
             out_str += f"LL_UNKNOWN_RSP"
         elif opcode == 8: # LL_FEATURE_REQ
-            out_str += f"LL_FEATURE_REQ {self.extractFeatures(pysh_pkt)}"
+            out_str += f"LL_FEATURE_REQ {self.extractFeatures(pysh_pkt, 'FEATURE_REQ')}"
         elif opcode == 9: # LL_FEATURE_RSP
-            out_str += f"LL_FEATURE_RSP {self.extractFeatures(pysh_pkt)}"
+            out_str += f"LL_FEATURE_RSP {self.extractFeatures(pysh_pkt, 'FEATURE_RSP')}"
         elif opcode == 10: # LL_PAUSE_ENC_REQ
             out_str += f"LL_PAUSE_ENC_REQ"
         elif opcode == 11: # LL_PAUSE_ENC_RSP
@@ -258,11 +367,13 @@ class BLEStateAnalyzer:
         elif opcode == 13: # LL_REJECT_IND
             out_str += f"LL_REJECT_IND"
         elif opcode == 14: # LL_SLAVE_FEATURE_REQ
-            out_str += f"LL_SLAVE_FEATURE_REQ {self.extractFeatures(pysh_pkt)}"
+            out_str += f"LL_SLAVE_FEATURE_REQ {self.extractFeatures(pysh_pkt, 'SLAVE_FEATURE_REQ')}"
         elif opcode == 15: # LL_CONNECTION_PARAM_REQ
-            out_str += f"LL_CONNECTION_PARAM_REQ Interval Min {pysh_pkt.btle.control.interval.min} ({pysh_pkt.btle.control.interval.min*1.25}ms) Max {pysh_pkt.btle.control.interval.max} ({pysh_pkt.btle.control.interval.max*1.25}ms) Latency {pysh_pkt.btle.control.latency} Timeout {pysh_pkt.btle.control.timeout}"
+            interval_min, interval_max, latency, timeout = self.extractIntervalMinMax(pysh_pkt, "PARAM_REQ")
+            out_str += f"LL_CONNECTION_PARAM_REQ Interval Min {interval_min} ({interval_min*1.25}ms) Max {interval_max} ({interval_max*1.25}ms) Latency {latency} Timeout {timeout}"
         elif opcode == 16: # LL_CONNECTION_PARAM_RSP
-            out_str += f"LL_CONNECTION_PARAM_RSP Interval Min {pysh_pkt.btle.control.interval.min} ({pysh_pkt.btle.control.interval.min*1.25}ms) Max {pysh_pkt.btle.control.interval.max} ({pysh_pkt.btle.control.interval.max*1.25}ms) Latency {pysh_pkt.btle.control.latency} Timeout {pysh_pkt.btle.control.timeout}"
+            interval_min, interval_max, latency, timeout = self.extractIntervalMinMax(pysh_pkt, "PARAM_RSP")
+            out_str += f"LL_CONNECTION_PARAM_RSP Interval Min {interval_min} ({interval_min*1.25}ms) Max {interval_max} ({interval_max*1.25}ms) Latency {latency} Timeout {timeout}"
         elif opcode == 17: # LL_REJECT_EXT_IND
             out_str += f"LL_REJECT_EXT_IND"
         elif opcode == 18: # LL_PING_REQ
@@ -270,15 +381,18 @@ class BLEStateAnalyzer:
         elif opcode == 19: # LL_PING_RSP
             out_str += f"LL_PING_RSP"
         elif opcode == 20: # LL_LENGTH_REQ
-            out_str += f"LL_LENGTH_REQ TxMax {pysh_pkt.btle.control.max.tx.octets} TxTime {pysh_pkt.btle.control.max.tx.time} RxMax {pysh_pkt.btle.control.max.rx.octets} RxTime {pysh_pkt.btle.control.max.rx.time}"
+            out_str += f"LL_LENGTH_REQ {self.extractDLE(pysh_pkt)}"
         elif opcode == 21: # LL_LENGTH_RSP
-            out_str += f"LL_LENGTH_RSP TxMax {pysh_pkt.btle.control.max.tx.octets} TxTime {pysh_pkt.btle.control.max.tx.time} RxMax {pysh_pkt.btle.control.max.rx.octets} RxTime {pysh_pkt.btle.control.max.rx.time}"
+            out_str += f"LL_LENGTH_RSP {self.extractDLE(pysh_pkt)}"
         elif opcode == 22: # LL_PHY_REQ
-            out_str += f"LL_PHY_REQ Tx {pysh_pkt.btle.control.tx_phy} Rx {pysh_pkt.btle.control.rx_phy}"
+            phy, coded = self.extractPhy(pysh_pkt, "PHY_REQ")
+            out_str += f"LL_PHY_REQ PHY {phy}m CODED:{'YES' if coded else 'NO'}"
         elif opcode == 23: # LL_PHY_RSP
-            out_str += f"LL_PHY_RSP Tx {pysh_pkt.btle.control.tx_phy} Rx {pysh_pkt.btle.control.rx_phy}"
+            phy, coded = self.extractPhy(pysh_pkt, "PHY_REQ")
+            out_str += f"LL_PHY_RSP PHY {phy} CODED:{'YES' if coded else 'NO'}"
         elif opcode == 24: # LL_PHY_UPDATE_IND
-            out_str += f"LL_PHY_UPDATE_IND Tx {pysh_pkt.btle.control.tx_phy} Rx {pysh_pkt.btle.control.rx_phy}"
+            phy, coded = self.extractPhy(pysh_pkt, "PHY_UPDATE_IND")
+            out_str += f"LL_PHY_UPDATE_IND PHY {phy}m CODED:{'YES' if coded else 'NO'}"
         elif opcode == 25: # LL_MIN_USED_CHANNELS_IND
             out_str += f"LL_MIN_USED_CHANNELS_IND {pysh_pkt.btle.control.min_used_channels}"
         else:
@@ -340,7 +454,7 @@ class BLEStateAnalyzer:
             return self.getUUIDHexStr(btatt.characteristic)
         return self.getUUIDHexStr(btatt)
 
-    def getValueData(self, btatt, msg_type, characteristic):
+    def getValueData(self, packet_info, btatt, msg_type, characteristic):
         if hasattr(btatt, "value"):
             if "dataFrames" not in self.cur_state:
                 self.cur_state["dataFrames"] = []
@@ -362,6 +476,7 @@ class BLEStateAnalyzer:
             out_str += f"ATT_MTU_REQ CLIENT RX MTU {pysh_pkt.btatt.client.rx.mtu}"
         elif method == 3: # ATT_MTU_RSP
             out_str += f"ATT_MTU_RSP SERVER RX MTU {pysh_pkt.btatt.server.rx.mtu}"
+            self.cur_state["RX_MTU"] = pysh_pkt.btatt.server.rx.mtu
         elif method == 4: # ATT_FIND_INFO_REQ
             out_str += f"ATT_FIND_INFO_REQ Handle {self.getBTATTHandles(pysh_pkt)}"
         elif method == 5: # ATT_FIND_INFO_RSP
@@ -374,25 +489,25 @@ class BLEStateAnalyzer:
             out_str += f"ATT_READ_REQ Handle {self.getBTATTHandles(pysh_pkt)}"
         elif method == 11: # ATT_READ_RSP
             characteristic = self.getCharUUID(pysh_pkt.btatt)
-            out_str += f"ATT_READ_RSP Handle {self.getBTATTHandles(pysh_pkt)} Service {self.getServiceUUID(pysh_pkt.btatt)} Characteristic {characteristic} {self.getValueData(pysh_pkt.btatt, 'READ_RSP', characteristic)}"
+            out_str += f"ATT_READ_RSP Handle {self.getBTATTHandles(pysh_pkt)} Service {self.getServiceUUID(pysh_pkt.btatt)} Characteristic {characteristic} {self.getValueData(packet_info, pysh_pkt.btatt, 'READ_RSP', characteristic)}"
         elif method == 16: # ATT_READ_BY_GROUP_TYPE_REQ
             out_str += f"ATT_READ_BY_GROUP_TYPE_REQ Handle {self.getBTATTHandles(pysh_pkt)}"
         elif method == 17: # ATT_READ_BY_GROUP_TYPE_RSP
             out_str += f"ATT_READ_BY_GROUP_TYPE_RSP Service {self.getServiceUUID(pysh_pkt.btatt)} Attribute {self.getCharUUID(pysh_pkt.btatt)}"
         elif method == 18: # ATT_WRITE_REQ
             characteristic = self.getCharUUID(pysh_pkt.btatt)
-            out_str += f"ATT_WRITE_REQ Handle {self.getBTATTHandles(pysh_pkt)} Service {self.getServiceUUID(pysh_pkt.btatt)} Characteristic {characteristic} {self.getValueData(pysh_pkt.btatt, 'WRITE_REQ', characteristic)}"
+            out_str += f"ATT_WRITE_REQ Handle {self.getBTATTHandles(pysh_pkt)} Service {self.getServiceUUID(pysh_pkt.btatt)} Characteristic {characteristic} {self.getValueData(packet_info, pysh_pkt.btatt, 'WRITE_REQ', characteristic)}"
         elif method == 19: # ATT_WRITE_RSP
             out_str += f"ATT_WRITE_RSP Handle {self.getBTATTHandles(pysh_pkt)}"
         elif method == 20: # ATT_WRITE_CMD
             characteristic = self.getCharUUID(pysh_pkt.btatt)
-            out_str += f"ATT_WRITE_CMD Handle {self.getBTATTHandles(pysh_pkt)} Service {self.getServiceUUID(pysh_pkt.btatt)} Characteristic {characteristic} {self.getValueData(pysh_pkt.btatt, 'WRITE_CMD', characteristic)}"
+            out_str += f"ATT_WRITE_CMD Handle {self.getBTATTHandles(pysh_pkt)} Service {self.getServiceUUID(pysh_pkt.btatt)} Characteristic {characteristic} {self.getValueData(packet_info, pysh_pkt.btatt, 'WRITE_CMD', characteristic)}"
         elif method == 26: # ATT_HANDLE_VALUE_NOTIFICATION
             characteristic = self.getCharUUID(pysh_pkt.btatt)
-            out_str += f"ATT_HANDLE_VALUE_NOTIFICATION Handle {self.getBTATTHandles(pysh_pkt)} Service {self.getServiceUUID(pysh_pkt.btatt)} Characteristic {characteristic} {self.getValueData(pysh_pkt.btatt, 'VALUE_NOTIFY', characteristic)}"
+            out_str += f"ATT_HANDLE_VALUE_NOTIFICATION Handle {self.getBTATTHandles(pysh_pkt)} Service {self.getServiceUUID(pysh_pkt.btatt)} Characteristic {characteristic} {self.getValueData(packet_info, pysh_pkt.btatt, 'VALUE_NOTIFY', characteristic)}"
         elif method == 27: # ATT_HANDLE_VALUE_INDICATION
             characteristic = self.getCharUUID(pysh_pkt.btatt)
-            out_str += f"ATT_HANDLE_VALUE_INDICATION Handle {self.getBTATTHandles(pysh_pkt)} Service {self.getServiceUUID(pysh_pkt.btatt)} Characteristic {characteristic} {self.getValueData(pysh_pkt.btatt, 'VALUE_IND', characteristic)}"
+            out_str += f"ATT_HANDLE_VALUE_INDICATION Handle {self.getBTATTHandles(pysh_pkt)} Service {self.getServiceUUID(pysh_pkt.btatt)} Characteristic {characteristic} {self.getValueData(packet_info, pysh_pkt.btatt, 'VALUE_IND', characteristic)}"
         else:
             out_str += f"ATT method {method}"
         log.debug(out_str)
@@ -456,9 +571,26 @@ def readYamlUUIDS(yaml_file_name):
         uuid_data = {f"{serv['uuid']:04x}":serv['name'] for serv in yaml_data["uuids"]}
         return uuid_data
 
+def processFile(filename):
+    cap = pyshark.FileCapture(filename, use_ek=True)
+    bleStateAnalyzer = BLEStateAnalyzer(config_data, 
+                                        ble_services, 
+                                        ble_characteristics, 
+                                        ble_declarations,
+                                        ble_descriptors)
+    filenameonly = os.path.basename(filename)
+    log.info(f"-------------- {filenameonly} --------------")
+    for packet in cap:
+        packet_info = PacketInfo(packet.number, packet.frame_info.time.relative)
+        bleStateAnalyzer.handlePacket(packet, packet_info)
+    bleStateAnalyzer.handleEndOfAdvState()
+    if args.verbose:
+        log.info("-------------- STATS --------------")
+    bleStateAnalyzer.showStats()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Analyze BLE state')
-    parser.add_argument('filename', help='pcapng file to analyze')
+    parser.add_argument('filename', help='pcapng file to analyze - or folder with pcapng files')
     # Add argument for config json file
     parser.add_argument('--config', help='Config file', default="config.json")
     parser.add_argument('--verbose', help='Verbose output', action='store_true')
@@ -478,15 +610,17 @@ if __name__ == "__main__":
 
     # Read UUIDs and names
     config_data = readConfig(args.config)
-    cap = pyshark.FileCapture(args.filename, use_ek=True)
-    bleStateAnalyzer = BLEStateAnalyzer(config_data, 
-                                        ble_services, 
-                                        ble_characteristics, 
-                                        ble_declarations,
-                                        ble_descriptors)
-    for packet in cap:
-        packet_info = PacketInfo(packet.number, packet.frame_info.time.relative)
-        bleStateAnalyzer.handlePacket(packet, packet_info)
-    bleStateAnalyzer.handleEndOfAdvState()
-    log.info("-------------- STATS --------------")
-    bleStateAnalyzer.showStats()
+
+    # Set asyncio policy
+    nest_asyncio.apply()
+
+    # Check file or folder
+    if os.path.isdir(args.filename):
+        # Process all pcapng files in folder
+        for filename in os.listdir(args.filename):
+            if filename.endswith(".pcapng"):
+                processFile(args.filename + "/" + filename)
+    else:
+        # Process single file
+        processFile(args.filename)
+
