@@ -11,6 +11,30 @@
             "program": "FollowFileXFer.py",
             "console": "integratedTerminal",
             "justMyCode": true
+        },
+        {
+            "name": "Python: Analyze State",
+            "type": "python",
+            "request": "launch",
+            "program": "BLELogAnalyzer.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "C:\\Users\\rob\\Downloads\\blesniffs\\202307BLETestLogs\\AsusC223N WebApp Rev5 v1.2,46 + 2nd Attempt 2.pcapng"
+            ]
+        },
+        {
+            "name": "Python: List Packets",
+            "type": "python",
+            "request": "launch",
+            "program": "BLELogLister.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "C:\\Users\\rob\\Downloads\\blesniffs\\202307BLETestLogs\\AsusC223N WebApp Rev5 v1.2,46 + 2nd Attempt 2.pcapng",
+                "-s",
+                "4260"
+            ]
         }
     ]
 }

@@ -1,0 +1,8 @@
+{
+    "uuids":
+    {
+            "aa76677e9cfd4626a5100d305be57c8d": "RIC2_SVC",
+            "aa76677e9cfd4626a5100d305be57c8e": "RIC2_CMD",
+            "aa76677e9cfd4626a5100d305be57c8f": "RIC2_RSP"
+    }
+}

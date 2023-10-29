@@ -2,9 +2,11 @@ appdirs==1.4.4
 lxml==4.9.3
 martypy==3.5.2
 memory-profiler==0.61.0
+numpy==1.26.1
 packaging==23.1
 psutil==5.9.5
 pyserial==3.5
 pyshark==0.6
+PyYAML==6.0.1
 scapy==2.5.0
 termcolor==2.3.0
