@@ -23,7 +23,7 @@ class MsgHandler:
             self.onMsg(msg, self.lastPacketInfo)
 
     def onError(self):
-        self.outfile.write("<<CRC>>")
+        self.outfile.write("<<CRC>>\n")
         # print(f"HDLC Error")
         if self.onError is not None:
             self.onError()
