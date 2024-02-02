@@ -31,4 +31,5 @@ class CmdRespAnalyzer:
         else:
             self.msg_tracker[msg.msgNum].resp = msg.payload
             # print(f"CmdResp #{msg.msgNum} RespTime {packetInfo.timestamp - self.msg_tracker[msg.msgNum].cmdTimestamp}")
-            self.outfile.write(f"CmdResp #{msg.msgNum} RespTime {round((packetInfo.timestamp - self.msg_tracker[msg.msgNum].cmdTimestamp)*1000, 1)}\n")
+            if self.outfile:
+                self.outfile.write(f"CmdResp #{msg.msgNum} RespTime {round((packetInfo.timestamp - self.msg_tracker[msg.msgNum].cmdTimestamp)*1000, 1)}\n")

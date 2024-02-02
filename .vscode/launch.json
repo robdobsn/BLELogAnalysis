@@ -20,7 +20,8 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": [
-                "C:\\Users\\rob\\Downloads\\blesniffs\\202307BLETestLogs\\AsusC223N WebApp Rev5 v1.2,46 + 2nd Attempt 2.pcapng"
+                "C:\\Users\\rob\\Downloads\\blesniffs\\202307BLETestLogs\\AsusC223N WebApp Rev5 v1.2,46 + 2nd Attempt 2.pcapng",
+                "--ric"
             ]
         },
         {

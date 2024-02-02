@@ -1,5 +1,5 @@
 import pyshark
-from CommsAnalyzer import CommsAnalyzer
+from ricprotocols.RICCommsAnalyzer import RICCommsAnalyzer
 from PacketInfo import PacketInfo
 import logging
 import os
@@ -13,7 +13,7 @@ def analyzeFile(filename):
     outfilename = os.path.join(baseFolder, fname + ".txt")
     with open(outfilename, "w") as outfile:
         cap = pyshark.FileCapture(os.path.join(baseFolder, filename), use_ek=True)
-        commsAnalyzer = CommsAnalyzer(outfile)
+        commsAnalyzer = RICCommsAnalyzer(outfile)
         # print(cap[1].show())
 
         # Select BLE packets on MAC b8:d6:1a:bc:6e:96
